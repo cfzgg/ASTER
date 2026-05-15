@@ -161,7 +161,7 @@ bash scripts/reproduce_dlpfc.sh --skip-mclust
 
 ## Notebooks
 
-The notebooks are intended for result review and figure reproduction from `preprocess_data`, not for hiding core training logic.
+The notebooks are intended for result review and figure reproduction from `preprocess_data`.
 
 - `notebooks/Simulation_ASTER.ipynb`
 - `notebooks/DLPFC_ASTER.ipynb`
