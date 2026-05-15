@@ -85,6 +85,12 @@ The DLPFC ARI step also requires a system R installation with the `mclust` packa
 
 ### `preprocess_data`
 
+The data required under `preprocess_data/` can be downloaded from Google Drive:
+
+https://drive.google.com/drive/folders/1OQudu7wDPlJwyDIstHzmjBuXqyxFT_xO?usp=sharing
+
+After downloading, place the extracted folders/files under `preprocess_data/` following the structure below.
+
 - `preprocess_data/bc_xenium/uni/`
   - UNI feature maps
 - `preprocess_data/bc_xenium/bcam_input/`
