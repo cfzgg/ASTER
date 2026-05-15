@@ -99,8 +99,6 @@ After downloading, place the extracted folders/files under `preprocess_data/` fo
 - `preprocess_data/simulation/`
   - `*_processed.h5ad`
 
-For DLPFC and simulation, this repository currently ships the benchmark-ready processed inputs. In other words, those files are the reproducible starting point for ASTER itself inside this repo.
-
 ## Reproduction commands
 
 ### 1. Breast cancer Xenium
