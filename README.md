@@ -32,9 +32,6 @@ repro-st-aster/
 ## Working dependency baseline
 
 The tested baseline in this workspace is Python `3.9.23`.
-
-The most reliable package set found here is based on the local `UNI2` environment plus a few additions:
-
 - `torch==2.1.0+cu121`
 - `torchvision==0.16.0+cu121`
 - `timm==1.0.22`
