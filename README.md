@@ -50,7 +50,7 @@ The most reliable package set found here is based on the local `UNI2` environmen
 - `scikit-misc==0.3.1`
 - `tensorly==0.9.0`
 
-`single_cell_python` is not used as the canonical baseline because in this workspace it has a broken `torch` / `torchvision` pairing and is missing `timm`.
+
 
 ## Installation
 
