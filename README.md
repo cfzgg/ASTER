@@ -75,10 +75,6 @@ The DLPFC ARI step also requires a system R installation with the `mclust` packa
   - `cell_feature_matrix.h5`
   - `cell_coordinates.csv`
   - `tissue_standardized_0p5um.jpg`
-- `raw_data/dlpfc/`
-  - reserved for optional upstream raw downloads
-- `raw_data/simulation/`
-  - reserved for optional upstream raw downloads
 
 ### `preprocess_data`
 
