@@ -170,25 +170,3 @@ The notebooks are intended for result review and figure reproduction from `prepr
 ## UNI note
 
 The repository includes precomputed UNI-derived features for the breast cancer demo so readers can reproduce downstream steps directly. UNI model weights are not redistributed here; users must request them separately if they want to rerun feature extraction from scratch.
-
-## Smoke tests
-
-Breast cancer:
-
-```bash
-bash scripts/reproduce_bc_xenium_inr.sh --epochs 1 --batch-size 128 --max-cells 512 --out-dir /tmp/bc_inr_smoke
-bash scripts/reproduce_bc_xenium_bcam.sh --epochs 1 --batch-size 64 --max-cells 512 --inr-dir /tmp/bc_inr_smoke --out-dir /tmp/bc_bcam_smoke
-bash scripts/reproduce_bc_xenium_cluster.sh --max-cells 2000 --inr-dir /tmp/bc_inr_smoke --bcam-dir /tmp/bc_bcam_smoke --vis-dir /tmp/bc_cluster_smoke
-```
-
-Simulation:
-
-```bash
-bash scripts/reproduce_simulation.sh --sections embryo_section1 --scenarios sr_norm_0.3 --max-epoch 2
-```
-
-DLPFC:
-
-```bash
-bash scripts/reproduce_dlpfc.sh --slice-ids 151507 --max-epoch 2 --skip-mclust
-```
