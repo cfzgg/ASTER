@@ -23,7 +23,8 @@ def build_dataset(data_dir: Path, k_neighbors: int):
     return gene_expr, uni2_feat, coords, gene_names, indices[:, 1:]
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Entry point; ``argv`` lets a notebook call this like a function."""
     parser = argparse.ArgumentParser(description="Train BCAM on raw gene expression and UNI features.")
     parser.add_argument("--data-dir", type=Path, default=Path("preprocess_data/bc_xenium/bcam_input"))
     parser.add_argument("--out-dir", type=Path, default=Path("preprocess_data/bc_xenium/bcam_output"))
@@ -35,7 +36,18 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-cells", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.dry_run:
+        for name in [
+            "gene_expression_normalized.npy",
+            "uni2_features_per_cell.npy",
+            "cell_coords_standardized.npy",
+            "gene_names.npy",
+        ]:
+            print(args.data_dir / name)
+        print(f"output -> {args.out_dir}")
+        return 0
 
     seed_everything(args.seed)
     gene_expr, uni2_feat, _coords, gene_names, knn = build_dataset(args.data_dir, args.k_neighbors)
@@ -45,13 +57,6 @@ def main() -> int:
         uni2_feat = uni2_feat[:keep]
         gene_names = gene_names
         knn = np.clip(knn[:keep], 0, keep - 1)
-
-    if args.dry_run:
-        print(f"gene_expr: {gene_expr.shape}")
-        print(f"uni2_feat: {uni2_feat.shape}")
-        print(f"genes: {len(gene_names)}")
-        print(f"knn: {knn.shape}")
-        return 0
 
     import torch
     import torch.nn as nn

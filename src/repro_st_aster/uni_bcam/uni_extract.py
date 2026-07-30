@@ -3,11 +3,20 @@ from __future__ import annotations
 import argparse
 import pickle
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from PIL import Image
 
 from repro_st_aster.common import ensure_dir, file_report, save_json
+
+# The standardized H&E images are far larger than PIL's decompression-bomb guard
+# (the gastric slide is 40096 x 16352), so the limit is lifted deliberately.
+Image.MAX_IMAGE_PIXELS = None
+
+TILE_SIZE = 224
+PATCHES_PER_TILE = 16
+FEATURE_DIM = 1536
 
 
 def build_model(model_dir: Path, device):
@@ -41,7 +50,22 @@ def extract_features(
     model_dir: Path,
     out_dir: Path,
     device: str | None = None,
+    superpixel_stride: int = 16,
+    write_pickle: bool = True,
+    max_tile_rows: Optional[int] = None,
+    tile_batch_size: Optional[int] = None,
 ):
+    """Extract a UNI-2 superpixel feature grid from a standardized H&E image.
+
+    The image is cut into 224-px tiles; each tile yields 16x16 patch tokens, which
+    are stitched into a ``(n_tile_rows * 16, n_tile_cols * 16, 1536)`` grid.
+
+    ``superpixel_stride`` is recorded in the metadata only -- it does not change the
+    grid, it tells the downstream mapping step how many pixels one superpixel spans.
+    ``max_tile_rows`` truncates to the first N tile rows (smoke tests), and
+    ``tile_batch_size`` splits a tile row into chunks so that wide slides do not
+    exhaust GPU memory.
+    """
     import torch
     from torchvision import transforms
 
@@ -58,31 +82,39 @@ def extract_features(
 
     image = Image.open(image_path).convert("RGB")
     w, h = image.size
-    if w % 224 or h % 224:
-        raise ValueError(f"image size must be divisible by 224: {w}x{h}")
+    if w % TILE_SIZE or h % TILE_SIZE:
+        raise ValueError(f"image size must be divisible by {TILE_SIZE}: {w}x{h}")
 
-    n_patches_w = w // 224
-    n_patches_h = h // 224
+    n_patches_w = w // TILE_SIZE
+    n_patches_h = h // TILE_SIZE
+    if max_tile_rows is not None:
+        n_patches_h = min(n_patches_h, max_tile_rows)
+    chunk = tile_batch_size or n_patches_w
+
     features_rows = []
     patch_cache = []
 
     def hook_fn(_module, _inp, output):
-        patch_cache.append(output[:, 9:, :].reshape(output.shape[0], 16, 16, 1536).cpu().numpy())
+        # Drop the 1 cls + 8 register tokens, keep the 256 patch tokens.
+        patch_cache.append(
+            output[:, 9:, :].reshape(output.shape[0], PATCHES_PER_TILE, PATCHES_PER_TILE, FEATURE_DIM).cpu().numpy()
+        )
 
     handle = model.norm.register_forward_hook(hook_fn)
     try:
         with torch.no_grad():
             for row_idx in range(n_patches_h):
-                row_patches = []
-                for col_idx in range(n_patches_w):
-                    left = col_idx * 224
-                    upper = row_idx * 224
-                    patch = image.crop((left, upper, left + 224, upper + 224))
-                    row_patches.append(transform(patch))
-                batch = torch.stack(row_patches).to(device)
-                patch_cache.clear()
-                _ = model(batch)
-                features_rows.append(patch_cache[0])
+                row_blocks = []
+                for col_start in range(0, n_patches_w, chunk):
+                    tiles = []
+                    for col_idx in range(col_start, min(col_start + chunk, n_patches_w)):
+                        left = col_idx * TILE_SIZE
+                        upper = row_idx * TILE_SIZE
+                        tiles.append(transform(image.crop((left, upper, left + TILE_SIZE, upper + TILE_SIZE))))
+                    patch_cache.clear()
+                    _ = model(torch.stack(tiles).to(device))
+                    row_blocks.append(np.concatenate(patch_cache, axis=0))
+                features_rows.append(np.concatenate(row_blocks, axis=0))
     finally:
         handle.remove()
 
@@ -96,10 +128,10 @@ def extract_features(
     coords = {
         "i": i,
         "j": j,
-        "x_std": (j + 0.5) * 16,
-        "y_std": (i + 0.5) * 16,
-        "x_um": (j + 0.5) * 8.0,
-        "y_um": (i + 0.5) * 8.0,
+        "x_std": (j + 0.5) * superpixel_stride,
+        "y_std": (i + 0.5) * superpixel_stride,
+        "x_um": (j + 0.5) * superpixel_stride * 0.5,
+        "y_um": (i + 0.5) * superpixel_stride * 0.5,
     }
     np.savez(out_dir / "superpixel_coordinates.npz", **coords)
 
@@ -108,23 +140,36 @@ def extract_features(
         "grid_shape": [int(grid_h), int(grid_w)],
         "image_size": [int(w), int(h)],
         "model": "UNI-2 (ViT-Giant/14)",
-        "patch_size": 224,
-        "superpixel_size_pixels": 16,
-        "superpixel_size_um": 8.0,
+        "patch_size": TILE_SIZE,
+        "superpixel_size_pixels": int(superpixel_stride),
+        "superpixel_size_um": float(superpixel_stride) * 0.5,
+        "n_tiles": [int(n_patches_h), int(n_patches_w)],
+        "truncated_tile_rows": max_tile_rows is not None,
     }
     save_json(out_dir / "extraction_metadata.json", metadata)
-    with (out_dir / "uni2_features_complete.pkl").open("wb") as fh:
-        pickle.dump({"features": feature_map, "coordinates": coords, "metadata": metadata}, fh)
+    if write_pickle:
+        with (out_dir / "uni2_features_complete.pkl").open("wb") as fh:
+            pickle.dump({"features": feature_map, "coordinates": coords, "metadata": metadata}, fh)
     return metadata
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Extract UNI-2 features from breast cancer Xenium H&E image.")
+def main(argv: list[str] | None = None) -> int:
+    """Entry point; ``argv`` lets a notebook call this like a function."""
+    parser = argparse.ArgumentParser(description="Extract UNI-2 features from a standardized H&E image.")
     parser.add_argument("--image-path", type=Path, default=Path("raw_data/bc_xenium/tissue_standardized_0p5um.jpg"))
     parser.add_argument("--model-dir", type=Path, required=True, help="Directory containing UNI-2 weights (pytorch_model.bin).")
     parser.add_argument("--out-dir", type=Path, default=Path("preprocess_data/bc_xenium/uni"))
+    parser.add_argument(
+        "--superpixel-stride",
+        type=int,
+        default=16,
+        help="Pixel step per superpixel recorded in the metadata (colorectal used 14, single-cell runs 16).",
+    )
+    parser.add_argument("--no-pickle", action="store_true", help="Skip the large uni2_features_complete.pkl duplicate.")
+    parser.add_argument("--max-tile-rows", type=int, default=None, help="Only process the first N tile rows (smoke test).")
+    parser.add_argument("--tile-batch-size", type=int, default=None, help="Tiles per forward pass; defaults to a whole tile row.")
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.dry_run:
         print(file_report(args.image_path))
@@ -132,7 +177,15 @@ def main() -> int:
         print(f"output -> {args.out_dir}")
         return 0
 
-    metadata = extract_features(args.image_path, args.model_dir, args.out_dir)
+    metadata = extract_features(
+        args.image_path,
+        args.model_dir,
+        args.out_dir,
+        superpixel_stride=args.superpixel_stride,
+        write_pickle=not args.no_pickle,
+        max_tile_rows=args.max_tile_rows,
+        tile_batch_size=args.tile_batch_size,
+    )
     print(metadata)
     return 0
 

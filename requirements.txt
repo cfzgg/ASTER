@@ -12,3 +12,4 @@ matplotlib==3.9.4
 Pillow==11.3.0
 scikit-misc==0.3.1
 tensorly==0.9.0
+pyarrow==21.0.0

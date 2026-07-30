@@ -41,6 +41,25 @@ def file_report(path: str | Path) -> str:
     return f"{path} ({size_mb:.2f} MB)"
 
 
+def require_inputs(paths: Iterable[str | Path], dataset: Optional[str] = None) -> None:
+    """Fail early, and legibly, when a required input file is absent.
+
+    Every data directory ships empty, so the most likely first failure is a dataset
+    that was not downloaded or was unpacked to the wrong place. Raising here beats a
+    bare ``FileNotFoundError`` from deep inside numpy or scanpy.
+    """
+    missing = [Path(p) for p in paths if not Path(p).exists()]
+    if not missing:
+        return
+    lines = [f"{len(missing)} required input file(s) not found:"]
+    lines += [f"  - {p}" for p in missing]
+    hint = f"python scripts/check_data.py {dataset}" if dataset else "python scripts/check_data.py"
+    lines.append("")
+    lines.append(f"This repository ships its data directories empty. Run `{hint}` to see")
+    lines.append("what is missing, and the README of the data directory for the download link.")
+    raise FileNotFoundError("\n".join(lines))
+
+
 def find_repo_root(start: Optional[Path] = None, markers: Optional[Iterable[str]] = None) -> Path:
     start = (start or Path.cwd()).resolve()
     expected = tuple(markers or ("README.md", "requirements.txt", "src", "raw_data", "preprocess_data"))

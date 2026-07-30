@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+export PYTHONPATH="$ROOT_DIR/src:${PYTHONPATH:-}"
+
+python -m repro_st_aster.aster_sc.reconstruct \
+  --data-dir "$ROOT_DIR/preprocess_data/gastric_xenium/bcam_input" \
+  --out-dir "$ROOT_DIR/preprocess_data/gastric_xenium/inr_output" \
+  --epochs 3000 \
+  --batch-size 2048 \
+  --depth 6 \
+  --xy-jitter 0.002 \
+  --patience 50 \
+  "$@"

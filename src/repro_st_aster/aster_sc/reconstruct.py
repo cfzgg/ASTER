@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from repro_st_aster.common import ensure_dir, save_json, seed_everything
+from repro_st_aster.common import ensure_dir, require_inputs, save_json, seed_everything
 
 
 class Timer:
@@ -45,16 +45,30 @@ class Timer:
         return f"{seconds / 3600:.2f}h"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Entry point; ``argv`` lets a notebook call this like a function."""
     parser = argparse.ArgumentParser(description="ASTER-SC step 1: INR + Tucker-2 reconstruction.")
     parser.add_argument("--data-dir", type=Path, default=Path("preprocess_data/bc_xenium/bcam_input"))
     parser.add_argument("--out-dir", type=Path, default=Path("preprocess_data/bc_xenium/inr_output"))
     parser.add_argument("--epochs", type=int, default=3000)
     parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument("--depth", type=int, default=6, help="SIREN depth (breast cancer / gastric cancer use 6).")
+    parser.add_argument(
+        "--xy-jitter",
+        type=float,
+        default=0.0,
+        help="Std of Gaussian jitter added to normalized coordinates during training (gastric run used 0.002).",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=0,
+        help="Early-stopping patience in epochs on the validation loss; 0 disables it (gastric run used 50).",
+    )
     parser.add_argument("--max-cells", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     seed_everything(args.seed)
     if args.dry_run:
@@ -65,9 +79,14 @@ def main() -> int:
         return 0
 
     import torch
-    import torch.nn as nn
     import torch.nn.functional as F
     from torch.cuda.amp import GradScaler, autocast
+
+    from repro_st_aster.aster_sc.inr_model import LRT_Tucker2, omega_ramp
+
+    require_inputs(
+        [args.data_dir / "gene_expression_normalized.npy", args.data_dir / "cell_coords_standardized.npy"]
+    )
 
     timer = Timer()
     timer.start_total()
@@ -85,63 +104,7 @@ def main() -> int:
     xy_ptp = coords.ptp(axis=0)
     coords_01 = np.clip((coords - xy_min) / xy_ptp, 0.0, 1.0).astype(np.float32)
 
-    class SineLayer(nn.Module):
-        def __init__(self, in_features, out_features, omega_0=1.0):
-            super().__init__()
-            self.linear = nn.Linear(in_features, out_features)
-            self.register_buffer("omega", torch.tensor(float(omega_0)))
-            with torch.no_grad():
-                bound = np.sqrt(6 / in_features) / self.omega.item()
-                self.linear.weight.uniform_(-bound, bound)
-
-        def set_omega(self, new_omega: float):
-            self.omega.fill_(float(new_omega))
-
-        def forward(self, x):
-            return torch.sin(self.omega * self.linear(x))
-
-    class XYNetSIREN(nn.Module):
-        def __init__(self, hidden=512, depth=6, out_dim=512, omega_0=1.0, p_dropout=0.1):
-            super().__init__()
-            layers = [SineLayer(2, hidden, omega_0)]
-            for _ in range(depth - 2):
-                layers.append(SineLayer(hidden, hidden, omega_0))
-                if p_dropout > 0:
-                    layers.append(nn.Dropout(p_dropout))
-            layers.append(nn.Linear(hidden, out_dim))
-            self.net = nn.Sequential(*layers)
-
-        def set_omega(self, omega: float):
-            for module in self.net:
-                if isinstance(module, SineLayer):
-                    module.set_omega(omega)
-
-        def forward(self, xy01):
-            return self.net(xy01)
-
-    class LRT_Tucker2(nn.Module):
-        def __init__(self, n_genes, r_s=512, r_g=256, hidden=512, depth=6, omega_0=1.0, p_dropout=0.1):
-            super().__init__()
-            self.xy_net = XYNetSIREN(hidden=hidden, depth=depth, out_dim=r_s, omega_0=omega_0, p_dropout=p_dropout)
-            self.g_emb = nn.Embedding(n_genes, r_g)
-            self.K = nn.Parameter(torch.empty(r_s, r_g))
-            nn.init.xavier_uniform_(self.K, gain=0.5)
-            nn.init.normal_(self.g_emb.weight, std=0.02)
-
-        def set_omega(self, omega: float):
-            self.xy_net.set_omega(omega)
-
-        def forward_block(self, xy_block, gene_idx_block):
-            s = self.xy_net(xy_block)
-            g = self.g_emb(gene_idx_block)
-            return torch.matmul(torch.matmul(s, self.K), g.t())
-
-        @torch.no_grad()
-        def full_reconstruct(self, xy_all):
-            s = self.xy_net(xy_all)
-            return torch.matmul(torch.matmul(s, self.K), self.g_emb.weight.t())
-
-    model = LRT_Tucker2(n_genes=n_genes)
+    model = LRT_Tucker2(n_genes=n_genes, depth=args.depth)
     if torch.cuda.is_available():
         model = model.cuda()
     device = next(model.parameters()).device
@@ -157,14 +120,7 @@ def main() -> int:
     expr_val = gene_expr[idx_val]
 
     def omega_schedule(epoch, max_epoch):
-        a, b = 0.2, 0.6
-        p = epoch / max_epoch
-        if p <= a:
-            return 1.0
-        if p >= b:
-            return 5.0
-        t = (p - a) / (b - a)
-        return 1.0 + t * 4.0
+        return omega_ramp(epoch, max_epoch, omega_start=1.0, omega_end=5.0, ramp=(0.2, 0.6))
 
     def lr_schedule(base_lr, epoch, max_epoch):
         warmup = 20
@@ -183,6 +139,8 @@ def main() -> int:
     best_val = float("inf")
     train_losses, val_losses = [], []
     gene_idx = torch.arange(n_genes, dtype=torch.long, device=device)
+    patience_counter = 0
+    stopped_early = False
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -195,7 +153,10 @@ def main() -> int:
             batch_idx = idx_train[start : start + args.batch_size]
             if len(batch_idx) == 0:
                 continue
-            xy_batch = torch.tensor(coords_01[batch_idx], dtype=torch.float32, device=device)
+            xy_np = coords_01[batch_idx]
+            if args.xy_jitter > 0:
+                xy_np = np.clip(xy_np + np.random.normal(0, args.xy_jitter, xy_np.shape), 0.0, 1.0)
+            xy_batch = torch.tensor(xy_np, dtype=torch.float32, device=device)
             expr_batch = torch.tensor(gene_expr[batch_idx], dtype=torch.float32, device=device)
             with autocast(enabled=True):
                 pred = F.relu(model.forward_block(xy_batch, gene_idx))
@@ -216,7 +177,14 @@ def main() -> int:
         if val_loss < best_val:
             best_val = val_loss
             best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
         print(f"epoch {epoch:03d} train={train_loss:.4f} val={val_loss:.4f}")
+        if args.patience > 0 and patience_counter >= args.patience:
+            stopped_early = True
+            print(f"early stop at epoch {epoch} (patience {args.patience})")
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -242,6 +210,12 @@ def main() -> int:
             "n_genes": int(n_genes),
             "best_val_loss": float(best_val),
             "epochs": len(train_losses),
+            "epochs_run": len(train_losses),
+            "epochs_requested": int(args.epochs),
+            "stopped_early": bool(stopped_early),
+            "depth": int(args.depth),
+            "xy_jitter": float(args.xy_jitter),
+            "patience": int(args.patience),
         },
     )
 

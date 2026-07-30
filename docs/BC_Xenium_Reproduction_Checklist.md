@@ -12,6 +12,15 @@ python -m pip install --extra-index-url https://download.pytorch.org/whl/cu121 -
 
 If you insist on `single_cell_python`, first repair its `torch` / `torchvision` mismatch and install `timm`.
 
+## Data
+
+The data directories ship **empty**. Download packages 1 and 2 from the "Data download"
+section of the top-level README first, then confirm the layout:
+
+```bash
+python scripts/check_data.py bc_xenium
+```
+
 ## Repository-local paths
 
 Raw input:
