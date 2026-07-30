@@ -1,7 +1,6 @@
 # repro-st-aster
 
-This repository contains the code and notebooks used for the ASTER analyses. The data
-are kept outside GitHub because of their size and are provided as a separate archive.
+This repository contains the code and notebooks used for the ASTER analyses.
 
 ## Repository layout
 
